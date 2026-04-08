@@ -1,0 +1,155 @@
+require("dotenv").config();
+
+const express = require("express");
+
+const { createStorage } = require("./storage");
+const { createPixPayment, getPaymentById } = require("./payment");
+const { createTelegramBot } = require("./telegram");
+const { createWebhookRouter } = require("./webhook");
+
+function getEnv(name, { required } = { required: true }) {
+  const raw = process.env[name];
+  const v = typeof raw === "string" ? raw.trim() : raw;
+  if (required && (!v || String(v).trim() === "")) {
+    throw new Error(`Variável de ambiente ausente: ${name}`);
+  }
+  return v || null;
+}
+
+function isTruthyEnv(v) {
+  if (!v) return false;
+  const s = String(v).trim().toLowerCase();
+  return s === "1" || s === "true" || s === "yes" || s === "y";
+}
+
+async function main() {
+  const WEBHOOK_ONLY = isTruthyEnv(getEnv("WEBHOOK_ONLY", { required: false })) || isTruthyEnv(getEnv("ONLY_WEBHOOK", { required: false }));
+
+  const PORT = Number(getEnv("PORT", { required: false }) || 3000);
+  const MERCADO_PAGO_ACCESS_TOKEN = getEnv("MERCADO_PAGO_ACCESS_TOKEN");
+  const WEBHOOK_URL = getEnv("WEBHOOK_URL", { required: false });
+
+  const TELEGRAM_TOKEN = getEnv("TELEGRAM_TOKEN", { required: !WEBHOOK_ONLY });
+  const GROUP_CHAT_ID = getEnv("GROUP_CHAT_ID", { required: !WEBHOOK_ONLY });
+
+  const storage = createStorage();
+  await storage.ensureLoaded();
+
+  async function onApprovedUser({ telegramUserId }) {
+    const user = await storage.getUser(telegramUserId);
+    if (!user?.paid) return;
+    const inviteLink = await bot.createVipInviteLink();
+    await bot.sendVipInvite({ telegramUserId, inviteLink });
+    await storage.markInviteSent(telegramUserId, inviteLink);
+  }
+
+  async function createOrReusePayment({ telegramUserId, telegramUsername }) {
+    const forceNew = false;
+    return createOrReusePaymentInternal({ telegramUserId, telegramUsername, forceNew });
+  }
+
+  async function createOrReusePaymentInternal({ telegramUserId, telegramUsername, forceNew }) {
+    const existing = await storage.getPendingPayment(telegramUserId);
+    if (existing && !forceNew) {
+      const createdAtMs = Date.parse(existing.createdAt || "") || 0;
+      const ageMs = Date.now() - createdAtMs;
+      const isFresh = ageMs >= 0 && ageMs <= 30 * 60 * 1000;
+      if (isFresh && existing.status && existing.status !== "approved") return existing;
+    }
+
+    const payment = await createPixPayment({
+      accessToken: MERCADO_PAGO_ACCESS_TOKEN,
+      amount: 29.9,
+      description: "Acesso ao Grupo VIP Telegram",
+      telegramUserId,
+      telegramUsername,
+      webhookUrl: WEBHOOK_URL
+    });
+
+    await storage.setPendingPayment(telegramUserId, {
+      paymentId: payment.paymentId,
+      status: payment.status,
+      createdAt: payment.createdAt,
+      qrCode: payment.qrCode,
+      qrCodeBase64: payment.qrCodeBase64,
+      ticketUrl: payment.ticketUrl
+    });
+
+    return payment;
+  }
+
+  async function createPaymentForceNew({ telegramUserId, telegramUsername }) {
+    return createOrReusePaymentInternal({ telegramUserId, telegramUsername, forceNew: true });
+  }
+
+  async function checkPaymentStatus({ telegramUserId }) {
+    const user = await storage.getUser(telegramUserId);
+    const paymentId = user?.pendingPaymentId ? String(user.pendingPaymentId) : null;
+    if (!paymentId) return null;
+    const mpPayment = await getPaymentById({
+      accessToken: MERCADO_PAGO_ACCESS_TOKEN,
+      paymentId
+    });
+    return { paymentId, status: mpPayment?.status || null, mpPayment };
+  }
+
+  let bot = {
+    pollLoop: async () => {},
+    createVipInviteLink: async () => null,
+    sendVipInvite: async () => {},
+    removeUserFromGroup: async () => {}
+  };
+
+  if (TELEGRAM_TOKEN && GROUP_CHAT_ID) {
+    if (!String(GROUP_CHAT_ID).startsWith("-")) {
+      console.log(
+        `[server] Aviso: GROUP_CHAT_ID parece incorreto (${GROUP_CHAT_ID}). Para supergrupos, normalmente é algo como -100xxxxxxxxxx.`
+      );
+    }
+
+    bot = createTelegramBot({
+      token: TELEGRAM_TOKEN,
+      groupChatId: GROUP_CHAT_ID,
+      storage,
+      createOrReusePayment,
+      createPaymentForceNew,
+      checkPaymentStatus,
+      onApprovedUser
+    });
+  } else if (!WEBHOOK_ONLY) {
+    throw new Error("TELEGRAM_TOKEN e GROUP_CHAT_ID são obrigatórios quando WEBHOOK_ONLY não está habilitado.");
+  }
+
+  const app = express();
+  app.use(express.json({ limit: "2mb" }));
+
+  app.get("/health", (req, res) => res.json({ ok: true }));
+  app.use(
+    createWebhookRouter({
+      mercadoPagoAccessToken: MERCADO_PAGO_ACCESS_TOKEN,
+      storage,
+      bot
+    })
+  );
+
+  app.listen(PORT, () => {
+    console.log(`[server] http://localhost:${PORT}`);
+    if (!WEBHOOK_URL) {
+      console.log(
+        "[server] WEBHOOK_URL não definido. O Pix vai ser gerado, mas a aprovação não será automática sem um webhook público."
+      );
+    }
+    if (WEBHOOK_ONLY) {
+      console.log("[server] WEBHOOK_ONLY ativo: bot não inicia polling (/start não vai funcionar), apenas webhook/health.");
+    }
+  });
+
+  if (!WEBHOOK_ONLY) {
+    bot.pollLoop();
+  }
+}
+
+main().catch((err) => {
+  console.error("[fatal]", err?.message || err);
+  process.exit(1);
+});
