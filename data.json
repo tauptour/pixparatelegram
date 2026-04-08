@@ -1,0 +1,26 @@
+{
+  "users": {
+    "1216416353": {
+      "telegramUserId": "1216416353",
+      "paid": false,
+      "inviteSent": false,
+      "telegramUsername": "ffaelaraujo",
+      "firstName": "TwoF",
+      "lastName": "RJ",
+      "pendingPaymentId": "152846016963",
+      "pendingPaymentCreatedAt": "2026-04-07T03:11:20.890Z"
+    }
+  },
+  "payments": {
+    "152846016963": {
+      "paymentId": "152846016963",
+      "status": "pending",
+      "createdAt": "2026-04-07T03:11:20.890Z",
+      "qrCode": "00020126520014br.gov.bcb.pix0130pagamentos.althaplay@gmail.com520400005303986540529.905802BR5925ABDCEFGHHCFAEDBG2023030126009Sao Paulo62250521mpqrinter1528460169636304299C",
+      "qrCodeBase64": "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",
+      "ticketUrl": "https://www.mercadopago.com.br/payments/152846016963/ticket?caller_id=3320356610&hash=91f57c7d-6ddd-422b-9bdc-9c61fde76ce3",
+      "telegramUserId": "1216416353"
+    }
+  },
+  "paymentLogs": []
+}
