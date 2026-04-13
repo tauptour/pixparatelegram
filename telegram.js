@@ -221,6 +221,8 @@ function createTelegramBot({
   const vipPreviewPath = config.telegram.media.vipPreviewPath;
   const pixPreviewPath = config.telegram.media.pixPreviewPath;
   const startVideoPath = config.telegram.media.startVideoPath;
+  const videoCallPhotoPath = config.telegram.media.videoCallPhotoPath;
+  const previewPhotoPaths = config.telegram.media.previewPhotoPaths;
 
   let lastUpdateId = 0;
   let running = false;
@@ -243,6 +245,18 @@ function createTelegramBot({
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;");
+  }
+
+  function normalizeWhatsAppPhone(rawPhone) {
+    const digits = String(rawPhone || "").replaceAll(/\D/g, "");
+    return digits || null;
+  }
+
+  function buildWhatsAppUrl({ phone, text }) {
+    const p = normalizeWhatsAppPhone(phone);
+    if (!p) return null;
+    const t = text ? encodeURIComponent(String(text)) : "";
+    return t ? `https://wa.me/${p}?text=${t}` : `https://wa.me/${p}`;
   }
 
   function formatBrl(value) {
@@ -291,9 +305,9 @@ function createTelegramBot({
 
     const reply_markup = {
       inline_keyboard: [
-        [{ text: config.telegram.buttons.payPix, callback_data: config.telegram.steps.payPix }],
-        [{ text: config.telegram.buttons.preview, callback_data: config.telegram.steps.benefits }],
-        [{ text: config.telegram.buttons.rules, callback_data: config.telegram.steps.privacy }]
+        [{ text: config.telegram.buttons.startEnterVip, callback_data: config.telegram.steps.enterVip }],
+        [{ text: config.telegram.buttons.startVideoCall, callback_data: config.telegram.steps.videoCall }],
+        [{ text: config.telegram.buttons.startPreview, callback_data: config.telegram.steps.preview }]
       ]
     };
 
@@ -394,37 +408,61 @@ function createTelegramBot({
     }
   }
 
-  async function handleBenefitsCallback(callbackQuery) {
+  async function handleVideoCallCallback(callbackQuery) {
     const chatId = callbackQuery.message?.chat?.id || callbackQuery.from.id;
     const chatType = callbackQuery.message?.chat?.type || "private";
     if (chatType !== "private") {
       await tg.answerCallbackQuery(callbackQuery.id, { text: "Abra uma conversa privada comigo." });
       return;
     }
-    await tg.answerCallbackQuery(callbackQuery.id, { text: "Abrindo..." });
+    await tg.answerCallbackQuery(callbackQuery.id, { text: "Abrindo... 📸🔥" });
 
-    const text = config.telegram.texts.benefits();
+    const phone = process.env.WHATSAPP_NUMBER || config.telegram.videoCall?.whatsappPhone;
+    const offers = config.telegram.videoCall?.offers || [];
 
-    const sent = await trySendPhoto(chatId, vipPreviewPath, text, {
+    const inline_keyboard = offers
+      .map((offer) => {
+        const text = config.telegram.videoCall?.whatsappText
+          ? config.telegram.videoCall.whatsappText({ minutes: offer.minutes, price: offer.price })
+          : `Quero chamada de video ${offer.minutes}min (R$ ${offer.price})`;
+        const url = buildWhatsAppUrl({ phone, text });
+        if (!url) return null;
+        return [{ text: offer.label, url }];
+      })
+      .filter(Boolean);
+
+    const reply_markup = inline_keyboard.length > 0 ? { inline_keyboard } : undefined;
+
+    const caption = config.telegram.texts.videoCall();
+    const sent = await trySendPhoto(chatId, videoCallPhotoPath, caption, {
       parse_mode: "HTML",
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: config.telegram.buttons.vibeSoft, callback_data: config.telegram.steps.vibeSoft }],
-          [{ text: config.telegram.buttons.vibeHot, callback_data: config.telegram.steps.vibeHot }],
-          [{ text: config.telegram.buttons.payPixCard, callback_data: config.telegram.steps.payPix }]
-        ]
-      }
+      reply_markup
     });
     if (sent) return;
 
-    await tg.sendMessage(chatId, text, {
+    await tg.sendMessage(chatId, caption, { parse_mode: "HTML", reply_markup });
+  }
+
+  async function handlePreviewCallback(callbackQuery) {
+    const chatId = callbackQuery.message?.chat?.id || callbackQuery.from.id;
+    const chatType = callbackQuery.message?.chat?.type || "private";
+    if (chatType !== "private") {
+      await tg.answerCallbackQuery(callbackQuery.id, { text: "Abra uma conversa privada comigo." });
+      return;
+    }
+    await tg.answerCallbackQuery(callbackQuery.id, { text: "Enviando... 😈🔥" });
+
+    const photos = Array.isArray(previewPhotoPaths) ? previewPhotoPaths : [];
+    for (let i = 0; i < photos.length; i += 1) {
+      const caption = i === 0 ? config.telegram.texts.previewCaption() : undefined;
+      const options = caption ? { parse_mode: "HTML" } : undefined;
+      await trySendPhoto(chatId, photos[i], caption, options);
+    }
+
+    await tg.sendMessage(chatId, config.telegram.texts.previewCta(), {
       parse_mode: "HTML",
       reply_markup: {
-        inline_keyboard: [
-          [{ text: config.telegram.buttons.vibeSoft, callback_data: config.telegram.steps.vibeSoft }],
-          [{ text: config.telegram.buttons.vibeHot, callback_data: config.telegram.steps.vibeHot }],
-          [{ text: config.telegram.buttons.payPixCard, callback_data: config.telegram.steps.payPix }]
-        ]
+        inline_keyboard: [[{ text: config.telegram.buttons.subscribe, callback_data: config.telegram.steps.enterVip }]]
       }
     });
   }
@@ -444,28 +482,9 @@ function createTelegramBot({
       parse_mode: "HTML",
       reply_markup: {
         inline_keyboard: [
-          [{ text: config.telegram.buttons.payPix, callback_data: config.telegram.steps.payPix }],
-          [{ text: config.telegram.buttons.preview, callback_data: config.telegram.steps.benefits }]
+          [{ text: config.telegram.buttons.startEnterVip, callback_data: config.telegram.steps.enterVip }],
+          [{ text: config.telegram.buttons.startPreview, callback_data: config.telegram.steps.preview }]
         ]
-      }
-    });
-  }
-
-  async function handleVibeCallback(callbackQuery, vibe) {
-    const chatId = callbackQuery.message?.chat?.id || callbackQuery.from.id;
-    const chatType = callbackQuery.message?.chat?.type || "private";
-    if (chatType !== "private") {
-      await tg.answerCallbackQuery(callbackQuery.id, { text: "Abra uma conversa privada comigo." });
-      return;
-    }
-    await tg.answerCallbackQuery(callbackQuery.id, { text: "Entendi." });
-
-    const copy = vibe === "hot" ? config.telegram.texts.vibeHot() : config.telegram.texts.vibeSoft();
-
-    await tg.sendMessage(chatId, copy, {
-      parse_mode: "HTML",
-      reply_markup: {
-        inline_keyboard: [[{ text: config.telegram.buttons.payPix, callback_data: config.telegram.steps.payPix }]]
       }
     });
   }
@@ -489,7 +508,7 @@ function createTelegramBot({
     if (!result?.paymentId) {
       await tg.sendMessage(chatId, "Não encontrei um Pix pendente. Gere um novo no botão abaixo.", {
         parse_mode: "HTML",
-        reply_markup: { inline_keyboard: [[{ text: config.telegram.buttons.payPix, callback_data: config.telegram.steps.payPix }]] }
+        reply_markup: { inline_keyboard: [[{ text: config.telegram.buttons.startEnterVip, callback_data: config.telegram.steps.enterVip }]] }
       });
       return;
     }
@@ -587,13 +606,14 @@ function createTelegramBot({
 
     if (update.callback_query) {
       const cq = update.callback_query;
+      if (cq.data === config.telegram.steps.enterVip) return handlePayCallback(cq, { forceNew: false });
       if (cq.data === config.telegram.steps.payPix) return handlePayCallback(cq, { forceNew: false });
       if (cq.data === config.telegram.steps.payPixNew) return handlePayCallback(cq, { forceNew: true });
       if (cq.data === config.telegram.steps.checkPayment) return handleCheckPaymentCallback(cq);
-      if (cq.data === config.telegram.steps.benefits) return handleBenefitsCallback(cq);
+      if (cq.data === config.telegram.steps.preview) return handlePreviewCallback(cq);
+      if (cq.data === config.telegram.steps.benefits) return handlePreviewCallback(cq);
       if (cq.data === config.telegram.steps.privacy) return handlePrivacyCallback(cq);
-      if (cq.data === config.telegram.steps.vibeSoft) return handleVibeCallback(cq, "soft");
-      if (cq.data === config.telegram.steps.vibeHot) return handleVibeCallback(cq, "hot");
+      if (cq.data === config.telegram.steps.videoCall) return handleVideoCallCallback(cq);
       await tg.answerCallbackQuery(cq.id, { text: "Ação desconhecida." });
     }
   }
