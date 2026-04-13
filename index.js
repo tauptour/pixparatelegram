@@ -23,6 +23,11 @@ function isTruthyEnv(v) {
   return s === "1" || s === "true" || s === "yes" || s === "y";
 }
 
+function looksLikeTelegramToken(token) {
+  if (!token) return false;
+  return /^\d+:[A-Za-z0-9_-]{20,}$/.test(String(token).trim());
+}
+
 async function main() {
   const WEBHOOK_ONLY = isTruthyEnv(getEnv("WEBHOOK_ONLY", { required: false })) || isTruthyEnv(getEnv("ONLY_WEBHOOK", { required: false }));
 
@@ -35,6 +40,10 @@ async function main() {
   const TELEGRAM_TOKEN = getEnv("TELEGRAM_TOKEN", { required: !WEBHOOK_ONLY });
   const GROUP_CHAT_ID = getEnv("GROUP_CHAT_ID", { required: !WEBHOOK_ONLY });
   const storageFilePath = STORAGE_FILE || (STORAGE_DIR ? path.join(STORAGE_DIR, "data.json") : undefined);
+
+  if (TELEGRAM_TOKEN && !looksLikeTelegramToken(TELEGRAM_TOKEN)) {
+    throw new Error("TELEGRAM_TOKEN inválido. Verifique se você colou apenas o token do bot, sem SUPPORT_USERNAME ou outros textos.");
+  }
 
   const storage = createStorage(storageFilePath ? { filePath: storageFilePath } : undefined);
   await storage.ensureLoaded();
