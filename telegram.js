@@ -363,19 +363,19 @@ function createTelegramBot({
         ? await createPaymentForceNew({ telegramUserId, telegramUsername: username })
         : await createOrReusePayment({ telegramUserId, telegramUsername: username });
 
-      await trySendPhoto(
+      const amountBrl = escapeHtml(formatBrl(vipPrice || 29.9));
+      const qrCode = escapeHtml(payment.qrCode || "(não retornado pela API)");
+
+      await trySendQrPhoto(
         chatId,
-        pixPreviewPath,
-        config.telegram.texts.pixIntroCaption(),
+        payment.qrCodeBase64,
+        `<b>Pix gerado</b> 🔥\n<b>Valor:</b> ${amountBrl}\n\nCopia e cola abaixo 😈❤️`,
         { parse_mode: "HTML" }
       );
 
-      await trySendQrPhoto(chatId, payment.qrCodeBase64, "QR Code Pix", { parse_mode: "HTML" });
-
       const text = config.telegram.texts.pixMessage({
-        amountBrl: escapeHtml(formatBrl(vipPrice || 29.9)),
-        qrCode: escapeHtml(payment.qrCode || "(não retornado pela API)"),
-        ticketUrl: payment.ticketUrl ? escapeHtml(payment.ticketUrl) : null
+        amountBrl,
+        qrCode
       });
 
       const supportUser = process.env.SUPPORT_USERNAME ? String(process.env.SUPPORT_USERNAME).trim() : null;

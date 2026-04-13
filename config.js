@@ -36,7 +36,7 @@ const texts = {
 
   pixIntroCaption: () => "<b>Pix prontinho</b> 😈",
 
-  pixMessage: ({ amountBrl, qrCode, ticketUrl }) =>
+  pixMessage: ({ amountBrl, qrCode }) =>
     [
       "<b>Pix gerado</b> 🔥",
       "",
@@ -44,7 +44,6 @@ const texts = {
       "",
       "<b>Copia e cola:</b>",
       `<pre>${qrCode}</pre>`,
-      ticketUrl ? `<b>Link do QR:</b> ${ticketUrl}` : null,
       "",
       "Pagou? clica em <b>“Já paguei”</b> ❤️"
     ].filter(Boolean).join("\n"),
