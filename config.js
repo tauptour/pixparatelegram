@@ -15,11 +15,8 @@ const buttons = {
   payPixCard: "💳 Pagar via Pix",
   preview: "😈 Quero uma prévia",
   rules: "🔒 Regras",
-  vibeSoft: "🤫 Mais discreto",
-  vibeHot: "🔥 Mais quente",
   checkPaid: "✅ Já paguei",
   newPix: "🔥 Gerar outro Pix",
-  support: "💬 Suporte"
 };
 
 const texts = {
