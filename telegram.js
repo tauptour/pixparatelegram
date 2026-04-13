@@ -254,13 +254,13 @@ function createTelegramBot({
     if (!isPrivateChat(message)) return;
     const chatId = message.chat.id;
     const text = [
-      "<b>Bem-vindo(a) ao VIP</b>",
+      "<b>Bem-vindo(a) ao VIP</b> 🔥",
       "",
-      "Aqui o clima esquenta no privado — conteúdo exclusivo, provocante e acesso liberado assim que o Pix aprovar.",
+      "Aqui a gente brinca no <b>privado</b>: conteúdo exclusivo, provocante e acesso liberado assim que o Pix aprovar.",
       "",
       "<b>Aviso:</b> conteúdo +18.",
       "",
-      "Se você gosta de discrição com um toque de maldade… toque em <b>“Pagar via Pix”</b> e eu te mando o QR e o copia-e-cola."
+      "Se você curte <b>discrição</b> com um toque de <b>maldade</b>… toca em <b>“Pagar via Pix”</b> e eu te mando o QR + o copia-e-cola."
     ].join("\n");
 
     const sent = await trySendPhoto(chatId, vipPreviewPath, text, {
@@ -323,14 +323,14 @@ function createTelegramBot({
       await trySendPhoto(
         chatId,
         pixPreviewPath,
-        "<b>Pagamento Pix</b>\nUse o QR ou o copia-e-cola abaixo.",
+        "<b>Pix prontinho pra você</b>\nEscolhe: QR ou copia-e-cola 😈",
         { parse_mode: "HTML" }
       );
 
       await trySendQrPhoto(chatId, payment.qrCodeBase64, "QR Code Pix", { parse_mode: "HTML" });
 
       const text = [
-        "<b>Pix gerado</b>",
+        "<b>Pix gerado</b> 🔥",
         "",
         `<b>Valor:</b> ${escapeHtml(formatBrl(vipPrice || 29.9))}`,
         payment.ticketUrl ? `<b>Link do QR (Mercado Pago):</b> ${escapeHtml(payment.ticketUrl)}` : null,
@@ -339,8 +339,10 @@ function createTelegramBot({
         `<pre>${escapeHtml(payment.qrCode || "(não retornado pela API)")}</pre>`,
         `<b>ID do pagamento:</b> <code>${escapeHtml(payment.paymentId)}</code>`,
         "",
-        "Depois que pagar, toque em <b>“Já paguei (checar)”</b> pra eu confirmar na hora.",
-        "Se preferir, eu também libero automaticamente quando o Mercado Pago aprovar."
+        "Faz o Pix e volta aqui… que eu te entrego o <b>link exclusivo</b> sem enrolar.",
+        "",
+        "Depois que pagar, toca em <b>“Já paguei (checar)”</b> pra eu confirmar na hora.",
+        "Se preferir, eu também libero automaticamente assim que o Mercado Pago aprovar."
       ].filter(Boolean);
 
       const supportUser = process.env.SUPPORT_USERNAME ? String(process.env.SUPPORT_USERNAME).trim() : null;
@@ -383,9 +385,9 @@ function createTelegramBot({
     await tg.answerCallbackQuery(callbackQuery.id, { text: "Abrindo..." });
 
     const text = [
-      "<b>Uma prévia do VIP</b>",
+      "<b>Uma prévia do VIP</b> 👀",
       "",
-      "Escolha o tom que você prefere e eu te mostro como vai ser por aqui.",
+      "Escolhe o clima que você gosta… e eu te mostro como vai ser por aqui.",
       "",
       "<b>Lembrete:</b> tudo é enviado apenas no privado."
     ].join("\n");
@@ -426,11 +428,11 @@ function createTelegramBot({
     const text = [
       "<b>Privacidade e regras</b>",
       "",
-      "• Eu não respondo no grupo. Tudo acontece aqui no privado.",
+      "• Eu não respondo no grupo. Tudo acontece aqui no <b>privado</b>.",
       "• O link do VIP é <b>único</b> (1 uso) e expira rápido.",
       "• Pagamento via Pix pelo Mercado Pago.",
       "",
-      "Quando quiser, é só gerar o Pix."
+      "Quer entrar com segurança e sem exposição? É só gerar o Pix."
     ].join("\n");
 
     await tg.sendMessage(chatId, text, {
@@ -456,14 +458,14 @@ function createTelegramBot({
     const copy =
       vibe === "hot"
         ? [
-            "<b>Mais quente</b>",
+            "<b>Mais quente</b> 🔥",
             "",
             "• Conteúdo +18 com uma pegada mais intensa",
             "• Acesso liberado assim que o Pix aprovar",
-            "• Atualizações frequentes"
+            "• Atualizações frequentes… pra te deixar querendo mais"
           ]
         : [
-            "<b>Mais discreto</b>",
+            "<b>Mais discreto</b> 🤫",
             "",
             "• Conteúdo +18 com um tom mais leve e elegante",
             "• Acesso liberado assim que o Pix aprovar",
@@ -503,7 +505,7 @@ function createTelegramBot({
     }
 
     if (result.status === "approved") {
-      await tg.sendMessage(chatId, "<b>Pagamento aprovado</b>\nLiberando seu acesso agora...", { parse_mode: "HTML" });
+      await tg.sendMessage(chatId, "<b>Pagamento aprovado</b> ✅\nCalma… tô liberando seu acesso agora. 🔥", { parse_mode: "HTML" });
       try {
         await onApprovedUser({ telegramUserId: from.id });
       } catch (err) {
@@ -527,12 +529,12 @@ function createTelegramBot({
     await tg.sendMessage(
       chatId,
       [
-        "<b>Ainda não aprovado</b>",
+        "<b>Ainda não aprovado</b> ⏳",
         "",
         `Status atual: <code>${statusLabel}</code>`,
         "",
-        "Se você acabou de pagar, pode levar alguns instantes.",
-        "Toque em <b>“Já paguei (checar)”</b> novamente em 1-2 minutos."
+        "Se você acabou de pagar, pode levar alguns instantes…",
+        "Toca em <b>“Já paguei (checar)”</b> de novo em 1-2 minutos."
       ].join("\n"),
       {
         parse_mode: "HTML",
@@ -639,9 +641,9 @@ function createTelegramBot({
   async function sendVipInvite({ telegramUserId, inviteLink }) {
     const chatId = telegramUserId;
     const text = [
-      "<b>Pagamento aprovado!</b>",
+      "<b>Pagamento aprovado!</b> 🔥",
       "",
-      "Seu acesso está liberado. Aqui vai o link exclusivo para entrar no VIP:",
+      "Seu acesso tá liberado. Aqui vai seu link exclusivo pra entrar no VIP:",
       escapeHtml(inviteLink),
       "",
       "<b>Observações:</b>",
