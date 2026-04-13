@@ -47,6 +47,18 @@ function parseVipPrice(raw) {
   return n;
 }
 
+function getBotVersion() {
+  const candidates = [
+    process.env.RAILWAY_GIT_COMMIT_SHA,
+    process.env.GITHUB_SHA,
+    process.env.COMMIT_SHA,
+    process.env.SOURCE_VERSION,
+    process.env.BOT_VERSION
+  ].filter(Boolean);
+  const raw = candidates[0] ? String(candidates[0]).trim() : "dev";
+  return raw.length > 12 ? raw.slice(0, 12) : raw;
+}
+
 async function main() {
   const WEBHOOK_ONLY = isTruthyEnv(getEnv("WEBHOOK_ONLY", { required: false })) || isTruthyEnv(getEnv("ONLY_WEBHOOK", { required: false }));
 
@@ -67,6 +79,8 @@ async function main() {
 
   const storage = createStorage(storageFilePath ? { filePath: storageFilePath } : undefined);
   await storage.ensureLoaded();
+
+  console.log("[build] version:", getBotVersion());
 
   const ADMIN_TELEGRAM_ID = getEnv("ADMIN_TELEGRAM_ID", { required: false });
 
