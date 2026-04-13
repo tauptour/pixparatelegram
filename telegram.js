@@ -1,6 +1,7 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const config = require("./config");
 
 function assertFetchAvailable() {
   if (typeof fetch !== "function") {
@@ -38,9 +39,10 @@ function createTelegramClient({ token }) {
 
     for (const [key, value] of Object.entries(fields || {})) {
       if (value === undefined || value === null) continue;
+      const normalizedValue = typeof value === "object" ? JSON.stringify(value) : value;
       chunks.push(Buffer.from(`--${boundary}\r\n`));
       chunks.push(Buffer.from(`Content-Disposition: form-data; name="${key}"\r\n\r\n`));
-      chunks.push(Buffer.from(String(value)));
+      chunks.push(Buffer.from(String(normalizedValue)));
       chunks.push(Buffer.from("\r\n"));
     }
 
@@ -216,9 +218,9 @@ function createTelegramBot({
 }) {
   const tg = createTelegramClient({ token });
   const normalizedGroupChatId = normalizeGroupChatId(groupChatId);
-  const vipPreviewPath = path.join(__dirname, "img", "vip_preview.png");
-  const pixPreviewPath = path.join(__dirname, "img", "pix_preview.jpg");
-  const startVideoPath = path.join(__dirname, "img", "start.mp4");
+  const vipPreviewPath = config.telegram.media.vipPreviewPath;
+  const pixPreviewPath = config.telegram.media.pixPreviewPath;
+  const startVideoPath = config.telegram.media.startVideoPath;
 
   let lastUpdateId = 0;
   let running = false;
@@ -284,17 +286,13 @@ function createTelegramBot({
   async function handleStart(message) {
     if (!isPrivateChat(message)) return;
     const chatId = message.chat.id;
-    const text = [
-      "<b>Bem-vindo(a) ao VIP</b> 🔥😈",
-      "",
-      "Acesso liberado assim que o Pix aprovar. ❤️"
-    ].join("\n");
+    const text = config.telegram.texts.start();
 
     const reply_markup = {
       inline_keyboard: [
-        [{ text: "🔥 Pagar via Pix", callback_data: "pay_pix" }],
-        [{ text: "😈 Quero uma prévia", callback_data: "benefits" }],
-        [{ text: "🔒 Regras", callback_data: "privacy" }]
+        [{ text: config.telegram.buttons.payPix, callback_data: config.telegram.steps.payPix }],
+        [{ text: config.telegram.buttons.preview, callback_data: config.telegram.steps.benefits }],
+        [{ text: config.telegram.buttons.rules, callback_data: config.telegram.steps.privacy }]
       ]
     };
 
@@ -353,34 +351,28 @@ function createTelegramBot({
       await trySendPhoto(
         chatId,
         pixPreviewPath,
-        "<b>Pix prontinho</b> 😈",
+        config.telegram.texts.pixIntroCaption(),
         { parse_mode: "HTML" }
       );
 
       await trySendQrPhoto(chatId, payment.qrCodeBase64, "QR Code Pix", { parse_mode: "HTML" });
 
-      const text = [
-        "<b>Pix gerado</b> 🔥",
-        "",
-        `<b>Valor:</b> ${escapeHtml(formatBrl(vipPrice || 29.9))}`,
-        "",
-        "<b>Copia e cola:</b>",
-        `<pre>${escapeHtml(payment.qrCode || "(não retornado pela API)")}</pre>`,
-        payment.ticketUrl ? `<b>Link do QR:</b> ${escapeHtml(payment.ticketUrl)}` : null,
-        "",
-        "Pagou? clica em <b>“Já paguei”</b> ❤️"
-      ].filter(Boolean);
+      const text = config.telegram.texts.pixMessage({
+        amountBrl: escapeHtml(formatBrl(vipPrice || 29.9)),
+        qrCode: escapeHtml(payment.qrCode || "(não retornado pela API)"),
+        ticketUrl: payment.ticketUrl ? escapeHtml(payment.ticketUrl) : null
+      });
 
       const supportUser = process.env.SUPPORT_USERNAME ? String(process.env.SUPPORT_USERNAME).trim() : null;
       const supportUrl = supportUser ? `https://t.me/${supportUser.replace(/^@/, "")}` : null;
 
-      await tg.sendMessage(chatId, text.join("\n"), {
+      await tg.sendMessage(chatId, text, {
         parse_mode: "HTML",
         reply_markup: {
           inline_keyboard: [
-            [{ text: "✅ Já paguei", callback_data: "check_payment" }],
-            [{ text: "🔥 Gerar outro Pix", callback_data: "pay_pix_new" }],
-            supportUrl ? [{ text: "💬 Suporte", url: supportUrl }] : []
+            [{ text: config.telegram.buttons.checkPaid, callback_data: config.telegram.steps.checkPayment }],
+            [{ text: config.telegram.buttons.newPix, callback_data: config.telegram.steps.payPixNew }],
+            supportUrl ? [{ text: config.telegram.buttons.support, url: supportUrl }] : []
           ].filter((row) => row.length > 0)
         }
       });
@@ -410,19 +402,15 @@ function createTelegramBot({
     }
     await tg.answerCallbackQuery(callbackQuery.id, { text: "Abrindo..." });
 
-    const text = [
-      "<b>Uma prévia do VIP</b> 👀🔥",
-      "",
-      "Escolhe o clima 😈"
-    ].join("\n");
+    const text = config.telegram.texts.benefits();
 
     const sent = await trySendPhoto(chatId, vipPreviewPath, text, {
       parse_mode: "HTML",
       reply_markup: {
         inline_keyboard: [
-          [{ text: "🤫 Mais discreto", callback_data: "vibe_soft" }],
-          [{ text: "🔥 Mais quente", callback_data: "vibe_hot" }],
-          [{ text: "💳 Pagar via Pix", callback_data: "pay_pix" }]
+          [{ text: config.telegram.buttons.vibeSoft, callback_data: config.telegram.steps.vibeSoft }],
+          [{ text: config.telegram.buttons.vibeHot, callback_data: config.telegram.steps.vibeHot }],
+          [{ text: config.telegram.buttons.payPixCard, callback_data: config.telegram.steps.payPix }]
         ]
       }
     });
@@ -432,9 +420,9 @@ function createTelegramBot({
       parse_mode: "HTML",
       reply_markup: {
         inline_keyboard: [
-          [{ text: "🤫 Mais discreto", callback_data: "vibe_soft" }],
-          [{ text: "🔥 Mais quente", callback_data: "vibe_hot" }],
-          [{ text: "💳 Pagar via Pix", callback_data: "pay_pix" }]
+          [{ text: config.telegram.buttons.vibeSoft, callback_data: config.telegram.steps.vibeSoft }],
+          [{ text: config.telegram.buttons.vibeHot, callback_data: config.telegram.steps.vibeHot }],
+          [{ text: config.telegram.buttons.payPixCard, callback_data: config.telegram.steps.payPix }]
         ]
       }
     });
@@ -449,20 +437,14 @@ function createTelegramBot({
     }
     await tg.answerCallbackQuery(callbackQuery.id, { text: "Certo." });
 
-    const text = [
-      "<b>Regras</b> 🔒",
-      "",
-      "• Tudo no <b>privado</b>",
-      "• Link <b>único</b> e expira rápido",
-      "• Pix pelo Mercado Pago"
-    ].join("\n");
+    const text = config.telegram.texts.privacy();
 
     await tg.sendMessage(chatId, text, {
       parse_mode: "HTML",
       reply_markup: {
         inline_keyboard: [
-          [{ text: "🔥 Pagar via Pix", callback_data: "pay_pix" }],
-          [{ text: "😈 Quero uma prévia", callback_data: "benefits" }]
+          [{ text: config.telegram.buttons.payPix, callback_data: config.telegram.steps.payPix }],
+          [{ text: config.telegram.buttons.preview, callback_data: config.telegram.steps.benefits }]
         ]
       }
     });
@@ -477,27 +459,12 @@ function createTelegramBot({
     }
     await tg.answerCallbackQuery(callbackQuery.id, { text: "Entendi." });
 
-    const copy =
-      vibe === "hot"
-        ? [
-            "<b>Mais quente</b> 🔥",
-            "",
-            "• Conteúdo +18 com uma pegada mais intensa",
-            "• Acesso liberado assim que o Pix aprovar",
-            "• Atualizações frequentes… pra te deixar querendo mais"
-          ]
-        : [
-            "<b>Mais discreto</b> 🤫",
-            "",
-            "• Conteúdo +18 com um tom mais leve e elegante",
-            "• Acesso liberado assim que o Pix aprovar",
-            "• Sem exposição: tudo no privado"
-          ];
+    const copy = vibe === "hot" ? config.telegram.texts.vibeHot() : config.telegram.texts.vibeSoft();
 
-    await tg.sendMessage(chatId, copy.join("\n"), {
+    await tg.sendMessage(chatId, copy, {
       parse_mode: "HTML",
       reply_markup: {
-        inline_keyboard: [[{ text: "🔥 Pagar via Pix", callback_data: "pay_pix" }]]
+        inline_keyboard: [[{ text: config.telegram.buttons.payPix, callback_data: config.telegram.steps.payPix }]]
       }
     });
   }
@@ -521,13 +488,13 @@ function createTelegramBot({
     if (!result?.paymentId) {
       await tg.sendMessage(chatId, "Não encontrei um Pix pendente. Gere um novo no botão abaixo.", {
         parse_mode: "HTML",
-        reply_markup: { inline_keyboard: [[{ text: "🔥 Pagar via Pix", callback_data: "pay_pix" }]] }
+        reply_markup: { inline_keyboard: [[{ text: config.telegram.buttons.payPix, callback_data: config.telegram.steps.payPix }]] }
       });
       return;
     }
 
     if (result.status === "approved") {
-      await tg.sendMessage(chatId, "<b>Pagamento aprovado</b> ✅\nCalma… tô liberando seu acesso agora. 🔥", { parse_mode: "HTML" });
+      await tg.sendMessage(chatId, config.telegram.texts.paymentApprovedChecking(), { parse_mode: "HTML" });
       try {
         await onApprovedUser({ telegramUserId: from.id });
       } catch (err) {
@@ -550,20 +517,13 @@ function createTelegramBot({
     const statusLabel = escapeHtml(result.status || "desconhecido");
     await tg.sendMessage(
       chatId,
-      [
-        "<b>Ainda não aprovado</b> ⏳",
-        "",
-        `Status atual: <code>${statusLabel}</code>`,
-        "",
-        "Se você acabou de pagar, pode levar alguns instantes…",
-        "Toca em <b>“Já paguei”</b> de novo em 1-2 minutos."
-      ].join("\n"),
+      config.telegram.texts.notApproved(statusLabel),
       {
         parse_mode: "HTML",
         reply_markup: {
           inline_keyboard: [
-            [{ text: "✅ Já paguei", callback_data: "check_payment" }],
-            [{ text: "🔥 Gerar outro Pix", callback_data: "pay_pix_new" }]
+            [{ text: config.telegram.buttons.checkPaid, callback_data: config.telegram.steps.checkPayment }],
+            [{ text: config.telegram.buttons.newPix, callback_data: config.telegram.steps.payPixNew }]
           ]
         }
       }
@@ -626,13 +586,13 @@ function createTelegramBot({
 
     if (update.callback_query) {
       const cq = update.callback_query;
-      if (cq.data === "pay_pix") return handlePayCallback(cq, { forceNew: false });
-      if (cq.data === "pay_pix_new") return handlePayCallback(cq, { forceNew: true });
-      if (cq.data === "check_payment") return handleCheckPaymentCallback(cq);
-      if (cq.data === "benefits") return handleBenefitsCallback(cq);
-      if (cq.data === "privacy") return handlePrivacyCallback(cq);
-      if (cq.data === "vibe_soft") return handleVibeCallback(cq, "soft");
-      if (cq.data === "vibe_hot") return handleVibeCallback(cq, "hot");
+      if (cq.data === config.telegram.steps.payPix) return handlePayCallback(cq, { forceNew: false });
+      if (cq.data === config.telegram.steps.payPixNew) return handlePayCallback(cq, { forceNew: true });
+      if (cq.data === config.telegram.steps.checkPayment) return handleCheckPaymentCallback(cq);
+      if (cq.data === config.telegram.steps.benefits) return handleBenefitsCallback(cq);
+      if (cq.data === config.telegram.steps.privacy) return handlePrivacyCallback(cq);
+      if (cq.data === config.telegram.steps.vibeSoft) return handleVibeCallback(cq, "soft");
+      if (cq.data === config.telegram.steps.vibeHot) return handleVibeCallback(cq, "hot");
       await tg.answerCallbackQuery(cq.id, { text: "Ação desconhecida." });
     }
   }
@@ -662,16 +622,7 @@ function createTelegramBot({
 
   async function sendVipInvite({ telegramUserId, inviteLink }) {
     const chatId = telegramUserId;
-    const text = [
-      "<b>Pagamento aprovado!</b> 🔥",
-      "",
-      "Seu link exclusivo tá aqui 😈❤️",
-      escapeHtml(inviteLink),
-      "",
-      "<b>Observações:</b>",
-      "- Link válido por 10 minutos",
-      "- Apenas 1 uso"
-    ].join("\n");
+    const text = config.telegram.texts.vipInvite(escapeHtml(inviteLink));
 
     await trySendPhoto(
       chatId,
