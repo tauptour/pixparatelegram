@@ -134,6 +134,25 @@ function createTelegramClient({ token }) {
     });
   }
 
+  async function sendVideoFromFile(chatId, filePath, caption, options = {}) {
+    const buffer = await fs.readFile(filePath);
+    const fileName = path.basename(filePath);
+
+    return apiMultipart("sendVideo", {
+      fields: {
+        chat_id: chatId,
+        caption: caption || undefined,
+        ...options
+      },
+      file: {
+        fieldName: "video",
+        fileName,
+        mimeType: "video/mp4",
+        buffer
+      }
+    });
+  }
+
   async function answerCallbackQuery(callbackQueryId, options = {}) {
     return api("answerCallbackQuery", {
       callback_query_id: callbackQueryId,
@@ -177,6 +196,7 @@ function createTelegramClient({ token }) {
     sendMessage,
     sendPhotoFromBase64,
     sendPhotoFromFile,
+    sendVideoFromFile,
     answerCallbackQuery,
     getUpdates,
     createOneTimeInviteLink,
@@ -198,6 +218,7 @@ function createTelegramBot({
   const normalizedGroupChatId = normalizeGroupChatId(groupChatId);
   const vipPreviewPath = path.join(__dirname, "img", "vip_preview.png");
   const pixPreviewPath = path.join(__dirname, "img", "pix_preview.jpg");
+  const startVideoPath = path.join(__dirname, "img", "start.mp4");
 
   let lastUpdateId = 0;
   let running = false;
@@ -239,6 +260,16 @@ function createTelegramBot({
     }
   }
 
+  async function trySendVideo(chatId, filePath, caption, options) {
+    try {
+      await fs.access(filePath);
+      await tg.sendVideoFromFile(chatId, filePath, caption, options);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async function trySendQrPhoto(chatId, base64Png, caption, options) {
     try {
       if (!base64Png) return false;
@@ -254,36 +285,35 @@ function createTelegramBot({
     if (!isPrivateChat(message)) return;
     const chatId = message.chat.id;
     const text = [
-      "<b>Bem-vindo(a) ao VIP</b> 🔥",
+      "<b>Bem-vindo(a) ao VIP</b> 🔥😈",
       "",
-      "Aqui a gente brinca no <b>privado</b>: conteúdo exclusivo, provocante e acesso liberado assim que o Pix aprovar.",
-      "",
-      "<b>Aviso:</b> conteúdo +18.",
-      "",
-      "Se você curte <b>discrição</b> com um toque de <b>maldade</b>… toca em <b>“Pagar via Pix”</b> e eu te mando o QR + o copia-e-cola."
+      "Acesso liberado assim que o Pix aprovar. ❤️"
     ].join("\n");
+
+    const reply_markup = {
+      inline_keyboard: [
+        [{ text: "🔥 Pagar via Pix", callback_data: "pay_pix" }],
+        [{ text: "😈 Quero uma prévia", callback_data: "benefits" }],
+        [{ text: "🔒 Regras", callback_data: "privacy" }]
+      ]
+    };
+
+    const sentVideo = await trySendVideo(chatId, startVideoPath, text, {
+      parse_mode: "HTML",
+      supports_streaming: true,
+      reply_markup
+    });
+    if (sentVideo) return;
 
     const sent = await trySendPhoto(chatId, vipPreviewPath, text, {
       parse_mode: "HTML",
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "Pagar via Pix", callback_data: "pay_pix" }],
-          [{ text: "Quero uma prévia", callback_data: "benefits" }],
-          [{ text: "Privacidade e regras", callback_data: "privacy" }]
-        ]
-      }
+      reply_markup
     });
     if (sent) return;
 
     await tg.sendMessage(chatId, text, {
       parse_mode: "HTML",
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "Pagar via Pix", callback_data: "pay_pix" }],
-          [{ text: "Quero uma prévia", callback_data: "benefits" }],
-          [{ text: "Privacidade e regras", callback_data: "privacy" }]
-        ]
-      }
+      reply_markup
     });
   }
 
@@ -299,7 +329,7 @@ function createTelegramBot({
       return;
     }
 
-    await tg.answerCallbackQuery(callbackQuery.id, { text: "Gerando Pix..." });
+    await tg.answerCallbackQuery(callbackQuery.id, { text: "Gerando Pix... 🔥" });
 
     try {
       const user = await storage.upsertUser(telegramUserId, {
@@ -323,7 +353,7 @@ function createTelegramBot({
       await trySendPhoto(
         chatId,
         pixPreviewPath,
-        "<b>Pix prontinho pra você</b>\nEscolhe: QR ou copia-e-cola 😈",
+        "<b>Pix prontinho</b> 😈",
         { parse_mode: "HTML" }
       );
 
@@ -333,16 +363,12 @@ function createTelegramBot({
         "<b>Pix gerado</b> 🔥",
         "",
         `<b>Valor:</b> ${escapeHtml(formatBrl(vipPrice || 29.9))}`,
-        payment.ticketUrl ? `<b>Link do QR (Mercado Pago):</b> ${escapeHtml(payment.ticketUrl)}` : null,
         "",
-        "<b>Código copia e cola (Pix):</b>",
+        "<b>Copia e cola:</b>",
         `<pre>${escapeHtml(payment.qrCode || "(não retornado pela API)")}</pre>`,
-        `<b>ID do pagamento:</b> <code>${escapeHtml(payment.paymentId)}</code>`,
+        payment.ticketUrl ? `<b>Link do QR:</b> ${escapeHtml(payment.ticketUrl)}` : null,
         "",
-        "Faz o Pix e volta aqui… que eu te entrego o <b>link exclusivo</b> sem enrolar.",
-        "",
-        "Depois que pagar, toca em <b>“Já paguei (checar)”</b> pra eu confirmar na hora.",
-        "Se preferir, eu também libero automaticamente assim que o Mercado Pago aprovar."
+        "Pagou? clica em <b>“Já paguei”</b> ❤️"
       ].filter(Boolean);
 
       const supportUser = process.env.SUPPORT_USERNAME ? String(process.env.SUPPORT_USERNAME).trim() : null;
@@ -352,9 +378,9 @@ function createTelegramBot({
         parse_mode: "HTML",
         reply_markup: {
           inline_keyboard: [
-            [{ text: "Já paguei (checar)", callback_data: "check_payment" }],
-            [{ text: "Gerar outro Pix", callback_data: "pay_pix_new" }],
-            supportUrl ? [{ text: "Suporte", url: supportUrl }] : []
+            [{ text: "✅ Já paguei", callback_data: "check_payment" }],
+            [{ text: "🔥 Gerar outro Pix", callback_data: "pay_pix_new" }],
+            supportUrl ? [{ text: "💬 Suporte", url: supportUrl }] : []
           ].filter((row) => row.length > 0)
         }
       });
@@ -385,20 +411,18 @@ function createTelegramBot({
     await tg.answerCallbackQuery(callbackQuery.id, { text: "Abrindo..." });
 
     const text = [
-      "<b>Uma prévia do VIP</b> 👀",
+      "<b>Uma prévia do VIP</b> 👀🔥",
       "",
-      "Escolhe o clima que você gosta… e eu te mostro como vai ser por aqui.",
-      "",
-      "<b>Lembrete:</b> tudo é enviado apenas no privado."
+      "Escolhe o clima 😈"
     ].join("\n");
 
     const sent = await trySendPhoto(chatId, vipPreviewPath, text, {
       parse_mode: "HTML",
       reply_markup: {
         inline_keyboard: [
-          [{ text: "Mais discreto", callback_data: "vibe_soft" }],
-          [{ text: "Mais quente", callback_data: "vibe_hot" }],
-          [{ text: "Pagar via Pix", callback_data: "pay_pix" }]
+          [{ text: "🤫 Mais discreto", callback_data: "vibe_soft" }],
+          [{ text: "🔥 Mais quente", callback_data: "vibe_hot" }],
+          [{ text: "💳 Pagar via Pix", callback_data: "pay_pix" }]
         ]
       }
     });
@@ -408,9 +432,9 @@ function createTelegramBot({
       parse_mode: "HTML",
       reply_markup: {
         inline_keyboard: [
-          [{ text: "Mais discreto", callback_data: "vibe_soft" }],
-          [{ text: "Mais quente", callback_data: "vibe_hot" }],
-          [{ text: "Pagar via Pix", callback_data: "pay_pix" }]
+          [{ text: "🤫 Mais discreto", callback_data: "vibe_soft" }],
+          [{ text: "🔥 Mais quente", callback_data: "vibe_hot" }],
+          [{ text: "💳 Pagar via Pix", callback_data: "pay_pix" }]
         ]
       }
     });
@@ -426,21 +450,19 @@ function createTelegramBot({
     await tg.answerCallbackQuery(callbackQuery.id, { text: "Certo." });
 
     const text = [
-      "<b>Privacidade e regras</b>",
+      "<b>Regras</b> 🔒",
       "",
-      "• Eu não respondo no grupo. Tudo acontece aqui no <b>privado</b>.",
-      "• O link do VIP é <b>único</b> (1 uso) e expira rápido.",
-      "• Pagamento via Pix pelo Mercado Pago.",
-      "",
-      "Quer entrar com segurança e sem exposição? É só gerar o Pix."
+      "• Tudo no <b>privado</b>",
+      "• Link <b>único</b> e expira rápido",
+      "• Pix pelo Mercado Pago"
     ].join("\n");
 
     await tg.sendMessage(chatId, text, {
       parse_mode: "HTML",
       reply_markup: {
         inline_keyboard: [
-          [{ text: "Pagar via Pix", callback_data: "pay_pix" }],
-          [{ text: "Quero uma prévia", callback_data: "benefits" }]
+          [{ text: "🔥 Pagar via Pix", callback_data: "pay_pix" }],
+          [{ text: "😈 Quero uma prévia", callback_data: "benefits" }]
         ]
       }
     });
@@ -475,7 +497,7 @@ function createTelegramBot({
     await tg.sendMessage(chatId, copy.join("\n"), {
       parse_mode: "HTML",
       reply_markup: {
-        inline_keyboard: [[{ text: "Pagar via Pix", callback_data: "pay_pix" }]]
+        inline_keyboard: [[{ text: "🔥 Pagar via Pix", callback_data: "pay_pix" }]]
       }
     });
   }
@@ -534,14 +556,14 @@ function createTelegramBot({
         `Status atual: <code>${statusLabel}</code>`,
         "",
         "Se você acabou de pagar, pode levar alguns instantes…",
-        "Toca em <b>“Já paguei (checar)”</b> de novo em 1-2 minutos."
+        "Toca em <b>“Já paguei”</b> de novo em 1-2 minutos."
       ].join("\n"),
       {
         parse_mode: "HTML",
         reply_markup: {
           inline_keyboard: [
-            [{ text: "Já paguei (checar)", callback_data: "check_payment" }],
-            [{ text: "Gerar outro Pix", callback_data: "pay_pix_new" }]
+            [{ text: "✅ Já paguei", callback_data: "check_payment" }],
+            [{ text: "🔥 Gerar outro Pix", callback_data: "pay_pix_new" }]
           ]
         }
       }
@@ -643,7 +665,7 @@ function createTelegramBot({
     const text = [
       "<b>Pagamento aprovado!</b> 🔥",
       "",
-      "Seu acesso tá liberado. Aqui vai seu link exclusivo pra entrar no VIP:",
+      "Seu link exclusivo tá aqui 😈❤️",
       escapeHtml(inviteLink),
       "",
       "<b>Observações:</b>",
