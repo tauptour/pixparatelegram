@@ -231,6 +231,17 @@ function createTelegramBot({
     }
   }
 
+  async function trySendQrPhoto(chatId, base64Png, caption, options) {
+    try {
+      if (!base64Png) return false;
+      await tg.sendPhotoFromBase64(chatId, base64Png, caption, options);
+      return true;
+    } catch (err) {
+      console.error("[telegram] erro ao enviar QR em foto:", err?.message || err);
+      return false;
+    }
+  }
+
   async function handleStart(message) {
     if (!isPrivateChat(message)) return;
     const chatId = message.chat.id;
@@ -282,62 +293,76 @@ function createTelegramBot({
 
     await tg.answerCallbackQuery(callbackQuery.id, { text: "Gerando Pix..." });
 
-    const user = await storage.upsertUser(telegramUserId, {
-      telegramUsername: username,
-      firstName: from.first_name || null,
-      lastName: from.last_name || null
-    });
-
-    if (user.paid) {
-      await tg.sendMessage(chatId, "<b>Pagamento já confirmado.</b>\nGerando seu link de acesso...", {
-        parse_mode: "HTML"
+    try {
+      const user = await storage.upsertUser(telegramUserId, {
+        telegramUsername: username,
+        firstName: from.first_name || null,
+        lastName: from.last_name || null
       });
-      await onApprovedUser({ telegramUserId });
-      return;
-    }
 
-    const payment = forceNew && createPaymentForceNew
-      ? await createPaymentForceNew({ telegramUserId, telegramUsername: username })
-      : await createOrReusePayment({ telegramUserId, telegramUsername: username });
-
-    await trySendPhoto(
-      chatId,
-      pixPreviewPath,
-      "<b>Pagamento Pix</b>\nUse o QR ou o copia-e-cola abaixo.",
-      { parse_mode: "HTML" }
-    );
-
-    if (payment.qrCodeBase64) {
-      await tg.sendPhotoFromBase64(chatId, payment.qrCodeBase64, "QR Code Pix", { parse_mode: "HTML" });
-    }
-
-    const text = [
-      "<b>Pix gerado</b>",
-      "",
-      "<b>Valor:</b> R$ 29,90",
-      payment.ticketUrl ? `<b>Link do QR (Mercado Pago):</b> ${escapeHtml(payment.ticketUrl)}` : null,
-      "",
-      "<b>Código copia e cola (Pix):</b>",
-      `<pre>${escapeHtml(payment.qrCode || "(não retornado pela API)")}</pre>`,
-      `<b>ID do pagamento:</b> <code>${escapeHtml(payment.paymentId)}</code>`,
-      "",
-      "Depois que pagar, toque em <b>“Já paguei (checar)”</b> pra eu confirmar na hora.",
-      "Se preferir, eu também libero automaticamente quando o Mercado Pago aprovar."
-    ].filter(Boolean);
-
-    const supportUser = process.env.SUPPORT_USERNAME ? String(process.env.SUPPORT_USERNAME).trim() : null;
-    const supportUrl = supportUser ? `https://t.me/${supportUser.replace(/^@/, "")}` : null;
-
-    await tg.sendMessage(chatId, text.join("\n"), {
-      parse_mode: "HTML",
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "Já paguei (checar)", callback_data: "check_payment" }],
-          [{ text: "Gerar outro Pix", callback_data: "pay_pix_new" }],
-          supportUrl ? [{ text: "Suporte", url: supportUrl }] : []
-        ].filter((row) => row.length > 0)
+      if (user.paid) {
+        await tg.sendMessage(chatId, "<b>Pagamento já confirmado.</b>\nGerando seu link de acesso...", {
+          parse_mode: "HTML"
+        });
+        await onApprovedUser({ telegramUserId });
+        return;
       }
-    });
+
+      const payment = forceNew && createPaymentForceNew
+        ? await createPaymentForceNew({ telegramUserId, telegramUsername: username })
+        : await createOrReusePayment({ telegramUserId, telegramUsername: username });
+
+      await trySendPhoto(
+        chatId,
+        pixPreviewPath,
+        "<b>Pagamento Pix</b>\nUse o QR ou o copia-e-cola abaixo.",
+        { parse_mode: "HTML" }
+      );
+
+      await trySendQrPhoto(chatId, payment.qrCodeBase64, "QR Code Pix", { parse_mode: "HTML" });
+
+      const text = [
+        "<b>Pix gerado</b>",
+        "",
+        "<b>Valor:</b> R$ 29,90",
+        payment.ticketUrl ? `<b>Link do QR (Mercado Pago):</b> ${escapeHtml(payment.ticketUrl)}` : null,
+        "",
+        "<b>Código copia e cola (Pix):</b>",
+        `<pre>${escapeHtml(payment.qrCode || "(não retornado pela API)")}</pre>`,
+        `<b>ID do pagamento:</b> <code>${escapeHtml(payment.paymentId)}</code>`,
+        "",
+        "Depois que pagar, toque em <b>“Já paguei (checar)”</b> pra eu confirmar na hora.",
+        "Se preferir, eu também libero automaticamente quando o Mercado Pago aprovar."
+      ].filter(Boolean);
+
+      const supportUser = process.env.SUPPORT_USERNAME ? String(process.env.SUPPORT_USERNAME).trim() : null;
+      const supportUrl = supportUser ? `https://t.me/${supportUser.replace(/^@/, "")}` : null;
+
+      await tg.sendMessage(chatId, text.join("\n"), {
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "Já paguei (checar)", callback_data: "check_payment" }],
+            [{ text: "Gerar outro Pix", callback_data: "pay_pix_new" }],
+            supportUrl ? [{ text: "Suporte", url: supportUrl }] : []
+          ].filter((row) => row.length > 0)
+        }
+      });
+    } catch (err) {
+      const message = err?.message || "Erro inesperado ao gerar o Pix.";
+      console.error("[telegram] erro ao gerar pix:", message, err?.details || "");
+      await tg.sendMessage(
+        chatId,
+        [
+          "<b>Não consegui gerar o Pix agora.</b>",
+          "",
+          escapeHtml(message),
+          "",
+          "Revise as variáveis do Mercado Pago e o WEBHOOK_URL. Depois tente novamente."
+        ].join("\n"),
+        { parse_mode: "HTML" }
+      );
+    }
   }
 
   async function handleBenefitsCallback(callbackQuery) {

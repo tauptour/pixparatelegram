@@ -28,12 +28,23 @@ function looksLikeTelegramToken(token) {
   return /^\d+:[A-Za-z0-9_-]{20,}$/.test(String(token).trim());
 }
 
+function normalizeWebhookUrl(rawUrl) {
+  if (!rawUrl) return null;
+  try {
+    const parsed = new URL(String(rawUrl).trim());
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
 async function main() {
   const WEBHOOK_ONLY = isTruthyEnv(getEnv("WEBHOOK_ONLY", { required: false })) || isTruthyEnv(getEnv("ONLY_WEBHOOK", { required: false }));
 
   const PORT = Number(getEnv("PORT", { required: false }) || 3000);
   const MERCADO_PAGO_ACCESS_TOKEN = getEnv("MERCADO_PAGO_ACCESS_TOKEN");
-  const WEBHOOK_URL = getEnv("WEBHOOK_URL", { required: false });
+  const WEBHOOK_URL = normalizeWebhookUrl(getEnv("WEBHOOK_URL", { required: false }));
   const STORAGE_FILE = getEnv("STORAGE_FILE", { required: false });
   const STORAGE_DIR = getEnv("STORAGE_DIR", { required: false });
 
@@ -152,7 +163,7 @@ async function main() {
     }
     if (!WEBHOOK_URL) {
       console.log(
-        "[server] WEBHOOK_URL não definido. O Pix vai ser gerado, mas a aprovação não será automática sem um webhook público."
+        "[server] WEBHOOK_URL ausente ou inválido. O Pix vai ser gerado, mas a aprovação não será automática sem um webhook público."
       );
     }
     if (WEBHOOK_ONLY) {
