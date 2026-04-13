@@ -366,13 +366,6 @@ function createTelegramBot({
       const amountBrl = escapeHtml(formatBrl(vipPrice || 29.9));
       const qrCode = escapeHtml(payment.qrCode || "(não retornado pela API)");
 
-      await trySendQrPhoto(
-        chatId,
-        payment.qrCodeBase64,
-        `<b>Pix gerado</b> 🔥\n<b>Valor:</b> ${amountBrl}\n\nCopia e cola abaixo 😈❤️`,
-        { parse_mode: "HTML" }
-      );
-
       const text = config.telegram.texts.pixMessage({
         amountBrl,
         qrCode
@@ -380,17 +373,18 @@ function createTelegramBot({
 
       const supportUser = process.env.SUPPORT_USERNAME ? String(process.env.SUPPORT_USERNAME).trim() : null;
       const supportUrl = supportUser ? `https://t.me/${supportUser.replace(/^@/, "")}` : null;
+      const reply_markup = {
+        inline_keyboard: [
+          [{ text: config.telegram.buttons.checkPaid, callback_data: config.telegram.steps.checkPayment }],
+          [{ text: config.telegram.buttons.newPix, callback_data: config.telegram.steps.payPixNew }],
+          supportUrl ? [{ text: config.telegram.buttons.support, url: supportUrl }] : []
+        ].filter((row) => row.length > 0)
+      };
 
-      await tg.sendMessage(chatId, text, {
-        parse_mode: "HTML",
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: config.telegram.buttons.checkPaid, callback_data: config.telegram.steps.checkPayment }],
-            [{ text: config.telegram.buttons.newPix, callback_data: config.telegram.steps.payPixNew }],
-            supportUrl ? [{ text: config.telegram.buttons.support, url: supportUrl }] : []
-          ].filter((row) => row.length > 0)
-        }
-      });
+      const sentQr = await trySendQrPhoto(chatId, payment.qrCodeBase64, text, { parse_mode: "HTML", reply_markup });
+      if (sentQr) return;
+
+      await tg.sendMessage(chatId, text, { parse_mode: "HTML", reply_markup });
     } catch (err) {
       const message = err?.message || "Erro inesperado ao gerar o Pix.";
       console.error("[telegram] erro ao gerar pix:", message, err?.details || "");
