@@ -267,7 +267,8 @@ function createTelegramBot({
       await fs.access(filePath);
       await tg.sendVideoFromFile(chatId, filePath, caption, options);
       return true;
-    } catch {
+    } catch (err) {
+      console.error("[telegram] erro ao enviar video:", err?.message || err, err?.details || "");
       return false;
     }
   }
