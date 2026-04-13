@@ -39,6 +39,14 @@ function normalizeWebhookUrl(rawUrl) {
   }
 }
 
+function parseVipPrice(raw) {
+  if (!raw) return 29.9;
+  const s = String(raw).trim().replace(",", ".");
+  const n = Number(s);
+  if (!Number.isFinite(n) || n <= 0) return 29.9;
+  return n;
+}
+
 async function main() {
   const WEBHOOK_ONLY = isTruthyEnv(getEnv("WEBHOOK_ONLY", { required: false })) || isTruthyEnv(getEnv("ONLY_WEBHOOK", { required: false }));
 
@@ -47,6 +55,7 @@ async function main() {
   const WEBHOOK_URL = normalizeWebhookUrl(getEnv("WEBHOOK_URL", { required: false }));
   const STORAGE_FILE = getEnv("STORAGE_FILE", { required: false });
   const STORAGE_DIR = getEnv("STORAGE_DIR", { required: false });
+  const VIP_PRICE = parseVipPrice(getEnv("VIP_PRICE", { required: false }));
 
   const TELEGRAM_TOKEN = getEnv("TELEGRAM_TOKEN", { required: !WEBHOOK_ONLY });
   const GROUP_CHAT_ID = getEnv("GROUP_CHAT_ID", { required: !WEBHOOK_ONLY });
@@ -59,12 +68,23 @@ async function main() {
   const storage = createStorage(storageFilePath ? { filePath: storageFilePath } : undefined);
   await storage.ensureLoaded();
 
+  const ADMIN_TELEGRAM_ID = getEnv("ADMIN_TELEGRAM_ID", { required: false });
+
   async function onApprovedUser({ telegramUserId }) {
-    const user = await storage.getUser(telegramUserId);
-    if (!user?.paid) return;
-    const inviteLink = await bot.createVipInviteLink();
-    await bot.sendVipInvite({ telegramUserId, inviteLink });
-    await storage.markInviteSent(telegramUserId, inviteLink);
+    try {
+      const user = await storage.getUser(telegramUserId);
+      if (!user?.paid) return;
+      const inviteLink = await bot.createVipInviteLink();
+      await bot.sendVipInvite({ telegramUserId, inviteLink });
+      await storage.markInviteSent(telegramUserId, inviteLink);
+    } catch (err) {
+      const msg = err?.message || String(err);
+      console.error("[invite] error:", msg);
+      if (ADMIN_TELEGRAM_ID && bot?.sendMessage) {
+        await bot.sendMessage(ADMIN_TELEGRAM_ID, `[invite] falha ao gerar/enviar convite para ${telegramUserId}: ${msg}`);
+      }
+      throw err;
+    }
   }
 
   async function createOrReusePayment({ telegramUserId, telegramUsername }) {
@@ -83,7 +103,7 @@ async function main() {
 
     const payment = await createPixPayment({
       accessToken: MERCADO_PAGO_ACCESS_TOKEN,
-      amount: 29.9,
+      amount: VIP_PRICE,
       description: "Acesso ao Grupo VIP Telegram",
       telegramUserId,
       telegramUsername,
@@ -134,6 +154,7 @@ async function main() {
     bot = createTelegramBot({
       token: TELEGRAM_TOKEN,
       groupChatId: GROUP_CHAT_ID,
+      vipPrice: VIP_PRICE,
       storage,
       createOrReusePayment,
       createPaymentForceNew,
@@ -173,6 +194,20 @@ async function main() {
 
   if (!WEBHOOK_ONLY) {
     bot.pollLoop();
+
+    setInterval(async () => {
+      try {
+        const users = await storage.listUsersNeedingInvite(50);
+        for (const user of users) {
+          const telegramUserId = Number(user?.telegramUserId);
+          if (!Number.isFinite(telegramUserId)) continue;
+          await onApprovedUser({ telegramUserId });
+        }
+      } catch (err) {
+        const msg = err?.message || String(err);
+        console.error("[invite] retry error:", msg);
+      }
+    }, 60_000);
   }
 }
 

@@ -139,6 +139,19 @@ function createStorage(options = {}) {
     });
   }
 
+  async function listUsersNeedingInvite(limit = 100) {
+    await ensureLoaded();
+    const out = [];
+    for (const user of Object.values(state.users || {})) {
+      if (!user) continue;
+      if (!user.paid) continue;
+      if (user.inviteSent) continue;
+      out.push(user);
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
   return {
     ensureLoaded,
     getUser,
@@ -149,9 +162,9 @@ function createStorage(options = {}) {
     clearPendingPayment,
     markPaymentApproved,
     logPaymentApproved,
-    markInviteSent
+    markInviteSent,
+    listUsersNeedingInvite
   };
 }
 
 module.exports = { createStorage };
-

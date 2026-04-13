@@ -187,6 +187,7 @@ function createTelegramClient({ token }) {
 function createTelegramBot({
   token,
   groupChatId,
+  vipPrice,
   storage,
   createOrReusePayment,
   createPaymentForceNew,
@@ -221,6 +222,13 @@ function createTelegramBot({
       .replaceAll(">", "&gt;");
   }
 
+  function formatBrl(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "R$ 0,00";
+    const fixed = n.toFixed(2).replace(".", ",");
+    return `R$ ${fixed}`;
+  }
+
   async function trySendPhoto(chatId, filePath, caption, options) {
     try {
       await fs.access(filePath);
@@ -248,11 +256,11 @@ function createTelegramBot({
     const text = [
       "<b>Bem-vindo(a) ao VIP</b>",
       "",
-      "Aqui o clima é mais quente, com conteúdo exclusivo e acesso liberado assim que o Pix aprovar.",
+      "Aqui o clima esquenta no privado — conteúdo exclusivo, provocante e acesso liberado assim que o Pix aprovar.",
       "",
       "<b>Aviso:</b> conteúdo +18.",
       "",
-      "Pronto(a) pra entrar? Toque em <b>“Pagar via Pix”</b> e eu te mando o QR e o copia-e-cola."
+      "Se você gosta de discrição com um toque de maldade… toque em <b>“Pagar via Pix”</b> e eu te mando o QR e o copia-e-cola."
     ].join("\n");
 
     const sent = await trySendPhoto(chatId, vipPreviewPath, text, {
@@ -324,7 +332,7 @@ function createTelegramBot({
       const text = [
         "<b>Pix gerado</b>",
         "",
-        "<b>Valor:</b> R$ 29,90",
+        `<b>Valor:</b> ${escapeHtml(formatBrl(vipPrice || 29.9))}`,
         payment.ticketUrl ? `<b>Link do QR (Mercado Pago):</b> ${escapeHtml(payment.ticketUrl)}` : null,
         "",
         "<b>Código copia e cola (Pix):</b>",
@@ -496,7 +504,22 @@ function createTelegramBot({
 
     if (result.status === "approved") {
       await tg.sendMessage(chatId, "<b>Pagamento aprovado</b>\nLiberando seu acesso agora...", { parse_mode: "HTML" });
-      await onApprovedUser({ telegramUserId: from.id });
+      try {
+        await onApprovedUser({ telegramUserId: from.id });
+      } catch (err) {
+        const msg = err?.message || "Falha ao gerar o convite.";
+        await tg.sendMessage(
+          chatId,
+          [
+            "<b>Pago confirmado, mas não consegui gerar o convite agora.</b>",
+            "",
+            escapeHtml(msg),
+            "",
+            "Tenta de novo em 1 minuto. Se persistir, chama o suporte."
+          ].join("\n"),
+          { parse_mode: "HTML" }
+        );
+      }
       return;
     }
 
@@ -648,6 +671,7 @@ function createTelegramBot({
     pollLoop,
     sendVipInvite,
     createVipInviteLink,
+    sendMessage: (chatId, text, options) => tg.sendMessage(chatId, text, options),
     removeUserFromGroup: (telegramUserId) => tg.removeUserFromGroup({ groupChatId, telegramUserId })
   };
 }
