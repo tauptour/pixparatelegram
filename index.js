@@ -1,6 +1,7 @@
 require("dotenv").config();
 
 const express = require("express");
+const path = require("node:path");
 
 const { createStorage } = require("./storage");
 const { createPixPayment, getPaymentById } = require("./payment");
@@ -28,11 +29,14 @@ async function main() {
   const PORT = Number(getEnv("PORT", { required: false }) || 3000);
   const MERCADO_PAGO_ACCESS_TOKEN = getEnv("MERCADO_PAGO_ACCESS_TOKEN");
   const WEBHOOK_URL = getEnv("WEBHOOK_URL", { required: false });
+  const STORAGE_FILE = getEnv("STORAGE_FILE", { required: false });
+  const STORAGE_DIR = getEnv("STORAGE_DIR", { required: false });
 
   const TELEGRAM_TOKEN = getEnv("TELEGRAM_TOKEN", { required: !WEBHOOK_ONLY });
   const GROUP_CHAT_ID = getEnv("GROUP_CHAT_ID", { required: !WEBHOOK_ONLY });
+  const storageFilePath = STORAGE_FILE || (STORAGE_DIR ? path.join(STORAGE_DIR, "data.json") : undefined);
 
-  const storage = createStorage();
+  const storage = createStorage(storageFilePath ? { filePath: storageFilePath } : undefined);
   await storage.ensureLoaded();
 
   async function onApprovedUser({ telegramUserId }) {
@@ -134,6 +138,9 @@ async function main() {
 
   app.listen(PORT, () => {
     console.log(`[server] http://localhost:${PORT}`);
+    if (storageFilePath) {
+      console.log(`[storage] ${storageFilePath}`);
+    }
     if (!WEBHOOK_URL) {
       console.log(
         "[server] WEBHOOK_URL não definido. O Pix vai ser gerado, mas a aprovação não será automática sem um webhook público."
