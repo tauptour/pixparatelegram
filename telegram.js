@@ -210,19 +210,25 @@ function createTelegramBot({
   token,
   groupChatId,
   vipPrice,
+  adminTelegramId,
   storage,
   createOrReusePayment,
   createPaymentForceNew,
   checkPaymentStatus,
-  onApprovedUser
+  getAnalyticsReportText,
+  onApprovedUser,
+  redeemWebCheckoutClaim
 }) {
   const tg = createTelegramClient({ token });
   const normalizedGroupChatId = normalizeGroupChatId(groupChatId);
   const vipPreviewPath = config.telegram.media.vipPreviewPath;
+  const startPhotoPath = config.telegram.media.startPhotoPath;
   const pixPreviewPath = config.telegram.media.pixPreviewPath;
   const startVideoPath = config.telegram.media.startVideoPath;
   const videoCallPhotoPath = config.telegram.media.videoCallPhotoPath;
   const previewPhotoPaths = config.telegram.media.previewPhotoPaths;
+  const vipOffers = Array.isArray(config.telegram.vipOffers) ? config.telegram.vipOffers : [];
+  const pixReminderTimers = new Map();
 
   let lastUpdateId = 0;
   let running = false;
@@ -266,6 +272,108 @@ function createTelegramBot({
     return `R$ ${fixed}`;
   }
 
+  function clearPixReminderTimers(telegramUserId) {
+    const key = String(telegramUserId || "");
+    const timers = pixReminderTimers.get(key);
+    if (!timers) return;
+    for (const timer of timers) clearTimeout(timer);
+    pixReminderTimers.delete(key);
+  }
+
+
+  async function isPaymentStillPending(telegramUserId) {
+    const user = await storage.getUser(telegramUserId);
+    if (!user) return false;
+    if (user.paid) return false;
+    if (!user.pendingPaymentId) return false;
+    return true;
+  }
+
+  function schedulePixReminders({ chatId, telegramUserId }) {
+    clearPixReminderTimers(telegramUserId);
+    const reminders = Array.isArray(config.telegram.texts.pixReminderMessages)
+      ? config.telegram.texts.pixReminderMessages
+      : [];
+    if (reminders.length === 0) return;
+
+    const delaysMs = [1 * 60 * 1000, 3 * 60 * 1000, 5 * 60 * 1000];
+    const timers = reminders.map((message, index) =>
+      setTimeout(async () => {
+        try {
+          const stillPending = await isPaymentStillPending(telegramUserId);
+          if (!stillPending) return;
+          await tg.sendMessage(chatId, message, { parse_mode: "HTML" });
+        } catch (err) {
+          console.error("[telegram] erro ao enviar lembrete pix:", err?.message || err);
+        }
+      }, delaysMs[index] || delaysMs[delaysMs.length - 1])
+    );
+
+    pixReminderTimers.set(String(telegramUserId), timers);
+  }
+
+  function getOfferByStep(step) {
+    return vipOffers.find((offer) => offer?.step === step) || null;
+  }
+
+  function getOfferById(offerId) {
+    return vipOffers.find((offer) => offer?.id === offerId) || null;
+  }
+
+  function getOfferCallbackData(offer) {
+    if (!offer?.id) return null;
+    return offer.step || `offer:${offer.id}`;
+  }
+
+  function getOfferByCallbackData(callbackData) {
+    return vipOffers.find((offer) => getOfferCallbackData(offer) === callbackData) || null;
+  }
+
+  function buildVipOfferKeyboardRows(offers = vipOffers) {
+    return offers
+      .map((offer) => {
+        const callbackData = getOfferCallbackData(offer);
+        if (!callbackData || !offer?.label) return null;
+        return [{ text: offer.label, callback_data: callbackData }];
+      })
+      .filter(Boolean);
+  }
+
+  function normalizeCpfDigits(raw) {
+    const digits = String(raw || "").replaceAll(/\D/g, "");
+    return digits || null;
+  }
+
+  function isValidCpf(cpfDigits) {
+    const cpf = normalizeCpfDigits(cpfDigits);
+    if (!cpf || cpf.length !== 11) return false;
+    if (/^(\d)\1{10}$/.test(cpf)) return false;
+
+    const nums = cpf.split("").map((c) => Number(c));
+    if (nums.some((n) => !Number.isFinite(n))) return false;
+
+    const calc = (len) => {
+      let sum = 0;
+      for (let i = 0; i < len; i += 1) sum += nums[i] * (len + 1 - i);
+      const mod = sum % 11;
+      return mod < 2 ? 0 : 11 - mod;
+    };
+
+    const d1 = calc(9);
+    const d2 = calc(10);
+    return d1 === nums[9] && d2 === nums[10];
+  }
+
+  function buildPayerName(from, fallbackUsername) {
+    const first = String(from?.first_name || "").trim();
+    const last = String(from?.last_name || "").trim();
+    const full = [first, last].filter(Boolean).join(" ").trim();
+    if (full) return full;
+    const u = String(fallbackUsername || "").trim();
+    if (u) return u;
+    return "Cliente";
+  }
+
   async function trySendPhoto(chatId, filePath, caption, options) {
     try {
       await fs.access(filePath);
@@ -298,18 +406,158 @@ function createTelegramBot({
     }
   }
 
+  async function sendPixFlow({ chatId, from, forceNew, offer }) {
+    const telegramUserId = from.id;
+    const username = from.username || null;
+    const selectedOffer = offer || vipOffers[0] || null;
+    await storage.upsertUser(telegramUserId, {
+      startReminderStage: null,
+      startReminderBaseAt: null,
+      startReminderNextAt: null
+    });
+
+    const user = await storage.upsertUser(telegramUserId, {
+      telegramUsername: username,
+      firstName: from.first_name || null,
+      lastName: from.last_name || null,
+      pendingVipOfferId: selectedOffer?.id || null
+    });
+
+    if (user.paid) {
+      await tg.sendMessage(chatId, "<b>Pagamento já confirmado.</b>\nGerando seu link de acesso...", {
+        parse_mode: "HTML"
+      });
+      await onApprovedUser({ telegramUserId });
+      return;
+    }
+
+    const payerDocument = user.payerDocument || user.cpf || null;
+    if (!payerDocument) {
+      await storage.upsertUser(telegramUserId, {
+        awaitingCpf: true,
+        pendingPixForceNew: Boolean(forceNew),
+        pendingVipOfferId: selectedOffer?.id || null
+      });
+      await tg.sendMessage(
+        chatId,
+        [
+          "<b>Antes de gerar o Pix, preciso do seu CPF.</b>",
+          "",
+          "Envie agora seu CPF <b>apenas números</b> (11 dígitos).",
+          "Ex: <code>12345678909</code>"
+        ].join("\n"),
+        { parse_mode: "HTML" }
+      );
+      return;
+    }
+
+    await storage.upsertUser(telegramUserId, {
+      awaitingCpf: false,
+      pendingPixForceNew: null,
+      pendingVipOfferId: selectedOffer?.id || null,
+      payerName: user.payerName || buildPayerName(from, username),
+      payerDocument
+    });
+
+    const payment = forceNew && createPaymentForceNew
+      ? await createPaymentForceNew({ telegramUserId, telegramUsername: username, offer: selectedOffer })
+      : await createOrReusePayment({ telegramUserId, telegramUsername: username, offer: selectedOffer });
+
+    await storage.upsertUser(telegramUserId, { pendingPaymentExpiredNotifiedAt: null });
+
+    const amountBrl = escapeHtml(formatBrl(payment.amount || selectedOffer?.amount || vipPrice || 29.9));
+    const qrCode = escapeHtml(payment.qrCode || "(não retornado pela API)");
+
+    const text = config.telegram.texts.pixMessage({
+      amountBrl,
+      qrCode
+    });
+
+    const supportUser = process.env.SUPPORT_USERNAME ? String(process.env.SUPPORT_USERNAME).trim() : null;
+    const supportUrl = supportUser ? `https://t.me/${supportUser.replace(/^@/, "")}` : null;
+    const reply_markup = {
+      inline_keyboard: [
+        [{ text: config.telegram.buttons.checkPaid, callback_data: config.telegram.steps.checkPayment }],
+        [{ text: config.telegram.buttons.copyPixCode, callback_data: config.telegram.steps.copyPix }],
+        supportUrl ? [{ text: config.telegram.buttons.support, url: supportUrl }] : []
+      ].filter((row) => row.length > 0)
+    };
+
+    const sentQr = await trySendQrPhoto(chatId, payment.qrCodeBase64, text, { parse_mode: "HTML", reply_markup });
+    schedulePixReminders({ chatId, telegramUserId });
+    if (sentQr) return;
+
+    schedulePixReminders({ chatId, telegramUserId });
+    await tg.sendMessage(chatId, text, { parse_mode: "HTML", reply_markup });
+  }
+
   async function handleStart(message) {
     if (!isPrivateChat(message)) return;
     const chatId = message.chat.id;
+    const telegramUserId = message.from?.id || chatId;
+    const startPayload = String(message.text || "").trim().split(/\s+/)[1] || null;
+    await storage.upsertUser(telegramUserId, {
+      telegramUsername: message.from?.username || null,
+      firstName: message.from?.first_name || null,
+      lastName: message.from?.last_name || null,
+      botBlockedAt: null,
+      botBlockedContext: null,
+      startedAt: (await storage.getUser(telegramUserId))?.startedAt || new Date().toISOString(),
+      lastStartAt: new Date().toISOString(),
+      startReminderStage: 0,
+      startReminderBaseAt: new Date().toISOString(),
+      startReminderNextAt: new Date(Date.now() + 60_000).toISOString()
+    });
+
+    if (startPayload?.startsWith("claim_") && redeemWebCheckoutClaim) {
+      const claimToken = startPayload.slice("claim_".length).trim();
+      const result = await redeemWebCheckoutClaim({
+        claimToken,
+        telegramUserId,
+        telegramUsername: message.from?.username || null,
+        firstName: message.from?.first_name || null,
+        lastName: message.from?.last_name || null
+      });
+
+      if (result?.status === "ok") {
+        await tg.sendMessage(chatId, "<b>Pagamento localizado.</b>\nTo liberando seu acesso agora... \u{1F525}", {
+          parse_mode: "HTML"
+        });
+        return;
+      }
+      if (result?.status === "pending") {
+        await tg.sendMessage(chatId, "Seu pagamento web ainda nao apareceu como aprovado. Assim que pagar, abra este link novamente.", {
+          parse_mode: "HTML"
+        });
+        return;
+      }
+      if (result?.status === "expired") {
+        await tg.sendMessage(chatId, "Esse checkout web expirou. Gere um novo Pix no site.", {
+          parse_mode: "HTML"
+        });
+        return;
+      }
+      if (result?.status === "claimed_by_other") {
+        await tg.sendMessage(chatId, "Esse pagamento ja foi resgatado por outra conta do Telegram.", {
+          parse_mode: "HTML"
+        });
+        return;
+      }
+      await tg.sendMessage(chatId, "Nao encontrei um checkout web valido para este link.", {
+        parse_mode: "HTML"
+      });
+      return;
+    }
+
     const text = config.telegram.texts.start();
 
-    const reply_markup = {
-      inline_keyboard: [
-        [{ text: config.telegram.buttons.startEnterVip, callback_data: config.telegram.steps.enterVip }],
-        [{ text: config.telegram.buttons.startVideoCall, callback_data: config.telegram.steps.videoCall }],
-        [{ text: config.telegram.buttons.startPreview, callback_data: config.telegram.steps.preview }]
-      ]
-    };
+    const reply_markup = { inline_keyboard: buildVipOfferKeyboardRows() };
+
+    const sent = await trySendPhoto(chatId, startPhotoPath, text, {
+      parse_mode: "HTML",
+      reply_markup
+    });
+    if (sent) return;
 
     const sentVideo = await trySendVideo(chatId, startVideoPath, text, {
       parse_mode: "HTML",
@@ -318,24 +566,16 @@ function createTelegramBot({
     });
     if (sentVideo) return;
 
-    const sent = await trySendPhoto(chatId, vipPreviewPath, text, {
-      parse_mode: "HTML",
-      reply_markup
-    });
-    if (sent) return;
-
     await tg.sendMessage(chatId, text, {
       parse_mode: "HTML",
       reply_markup
     });
   }
 
-  async function handlePayCallback(callbackQuery, { forceNew } = { forceNew: false }) {
+  async function handlePayCallback(callbackQuery, { forceNew, offer } = { forceNew: false, offer: null }) {
     const from = callbackQuery.from;
     const chatId = callbackQuery.message?.chat?.id || from.id;
     const chatType = callbackQuery.message?.chat?.type || "private";
-    const telegramUserId = from.id;
-    const username = from.username || null;
 
     if (chatType !== "private") {
       await tg.answerCallbackQuery(callbackQuery.id, { text: "Abra uma conversa privada comigo para pagar." });
@@ -345,46 +585,9 @@ function createTelegramBot({
     await tg.answerCallbackQuery(callbackQuery.id, { text: "Gerando Pix... 🔥" });
 
     try {
-      const user = await storage.upsertUser(telegramUserId, {
-        telegramUsername: username,
-        firstName: from.first_name || null,
-        lastName: from.last_name || null
-      });
-
-      if (user.paid) {
-        await tg.sendMessage(chatId, "<b>Pagamento já confirmado.</b>\nGerando seu link de acesso...", {
-          parse_mode: "HTML"
-        });
-        await onApprovedUser({ telegramUserId });
-        return;
-      }
-
-      const payment = forceNew && createPaymentForceNew
-        ? await createPaymentForceNew({ telegramUserId, telegramUsername: username })
-        : await createOrReusePayment({ telegramUserId, telegramUsername: username });
-
-      const amountBrl = escapeHtml(formatBrl(vipPrice || 29.9));
-      const qrCode = escapeHtml(payment.qrCode || "(não retornado pela API)");
-
-      const text = config.telegram.texts.pixMessage({
-        amountBrl,
-        qrCode
-      });
-
-      const supportUser = process.env.SUPPORT_USERNAME ? String(process.env.SUPPORT_USERNAME).trim() : null;
-      const supportUrl = supportUser ? `https://t.me/${supportUser.replace(/^@/, "")}` : null;
-      const reply_markup = {
-        inline_keyboard: [
-          [{ text: config.telegram.buttons.checkPaid, callback_data: config.telegram.steps.checkPayment }],
-          [{ text: config.telegram.buttons.newPix, callback_data: config.telegram.steps.payPixNew }],
-          supportUrl ? [{ text: config.telegram.buttons.support, url: supportUrl }] : []
-        ].filter((row) => row.length > 0)
-      };
-
-      const sentQr = await trySendQrPhoto(chatId, payment.qrCodeBase64, text, { parse_mode: "HTML", reply_markup });
-      if (sentQr) return;
-
-      await tg.sendMessage(chatId, text, { parse_mode: "HTML", reply_markup });
+      const user = await storage.getUser(from.id);
+      const resolvedOffer = offer || getOfferById(user?.pendingVipOfferId) || vipOffers[0] || null;
+      await sendPixFlow({ chatId, from, forceNew, offer: resolvedOffer });
     } catch (err) {
       const message = err?.message || "Erro inesperado ao gerar o Pix.";
       console.error("[telegram] erro ao gerar pix:", message, err?.details || "");
@@ -395,7 +598,7 @@ function createTelegramBot({
           "",
           escapeHtml(message),
           "",
-          "Revise as variáveis do Mercado Pago e o WEBHOOK_URL. Depois tente novamente."
+          "Revise as variáveis da MisticPay e o WEBHOOK_URL. Depois tente novamente."
         ].join("\n"),
         { parse_mode: "HTML" }
       );
@@ -456,10 +659,11 @@ function createTelegramBot({
     await tg.sendMessage(chatId, config.telegram.texts.previewCta(), {
       parse_mode: "HTML",
       reply_markup: {
-        inline_keyboard: [[{ text: config.telegram.buttons.subscribe, callback_data: config.telegram.steps.enterVip }]]
+        inline_keyboard: buildVipOfferKeyboardRows(vipOffers.slice(0, 1))
       }
     });
   }
+
 
   async function handlePrivacyCallback(callbackQuery) {
     const chatId = callbackQuery.message?.chat?.id || callbackQuery.from.id;
@@ -476,7 +680,7 @@ function createTelegramBot({
       parse_mode: "HTML",
       reply_markup: {
         inline_keyboard: [
-          [{ text: config.telegram.buttons.startEnterVip, callback_data: config.telegram.steps.enterVip }],
+          ...buildVipOfferKeyboardRows(),
           [{ text: config.telegram.buttons.startPreview, callback_data: config.telegram.steps.preview }]
         ]
       }
@@ -502,12 +706,13 @@ function createTelegramBot({
     if (!result?.paymentId) {
       await tg.sendMessage(chatId, "Não encontrei um Pix pendente. Gere um novo no botão abaixo.", {
         parse_mode: "HTML",
-        reply_markup: { inline_keyboard: [[{ text: config.telegram.buttons.startEnterVip, callback_data: config.telegram.steps.enterVip }]] }
+        reply_markup: { inline_keyboard: buildVipOfferKeyboardRows() }
       });
       return;
     }
 
     if (result.status === "approved") {
+      clearPixReminderTimers(from.id);
       await tg.sendMessage(chatId, config.telegram.texts.paymentApprovedChecking(), { parse_mode: "HTML" });
       try {
         await onApprovedUser({ telegramUserId: from.id });
@@ -537,10 +742,34 @@ function createTelegramBot({
         reply_markup: {
           inline_keyboard: [
             [{ text: config.telegram.buttons.checkPaid, callback_data: config.telegram.steps.checkPayment }],
-            [{ text: config.telegram.buttons.newPix, callback_data: config.telegram.steps.payPixNew }]
+            [{ text: config.telegram.buttons.copyPixCode, callback_data: config.telegram.steps.copyPix }]
           ]
         }
       }
+    );
+  }
+
+  async function handleCopyPixCallback(callbackQuery) {
+    const from = callbackQuery.from;
+    const chatId = callbackQuery.message?.chat?.id || from.id;
+    const chatType = callbackQuery.message?.chat?.type || "private";
+    if (chatType !== "private") {
+      await tg.answerCallbackQuery(callbackQuery.id, { text: "Abra uma conversa privada comigo." });
+      return;
+    }
+
+    const pending = await storage.getPendingPayment(from.id);
+    const code = pending?.qrCode ? String(pending.qrCode) : "";
+    if (!code) {
+      await tg.answerCallbackQuery(callbackQuery.id, { text: "Nao achei um Pix pendente. Gere um novo." });
+      return;
+    }
+
+    await tg.answerCallbackQuery(callbackQuery.id, { text: "Enviei o codigo pra voce copiar \u{1F4CB}" });
+    await tg.sendMessage(
+      chatId,
+      ["<b>Copia e cola (Pix):</b>", `<pre>${escapeHtml(code)}</pre>`].join("\n"),
+      { parse_mode: "HTML" }
     );
   }
 
@@ -587,22 +816,85 @@ function createTelegramBot({
     );
   }
 
+  async function handleReportCommand(message) {
+    if (!isPrivateChat(message)) return;
+    const requesterId = Number(message.from?.id);
+    const adminId = adminTelegramId ? Number(adminTelegramId) : null;
+    if (!adminId || requesterId !== adminId) {
+      await tg.sendMessage(message.chat.id, "Sem permissao.", { parse_mode: "HTML" });
+      return;
+    }
+    if (!getAnalyticsReportText) {
+      await tg.sendMessage(message.chat.id, "Relatorio indisponivel no momento.", { parse_mode: "HTML" });
+      return;
+    }
+
+    const text = await getAnalyticsReportText();
+    await tg.sendMessage(message.chat.id, text, { parse_mode: "HTML" });
+  }
+
   async function handleUpdate(update) {
     if (update.message) {
       const msg = update.message;
       if (!isPrivateChat(msg)) return;
       const text = msg.text || "";
       if (text.startsWith("/start")) return handleStart(msg);
+      if (msg.from?.id) {
+        await storage.upsertUser(msg.from.id, {
+          botBlockedAt: null,
+          botBlockedContext: null,
+          startReminderStage: null,
+          startReminderBaseAt: null,
+          startReminderNextAt: null
+        });
+      }
       if (text.startsWith("/id")) return handleIdCommand(msg);
+      if (text.startsWith("/relatorio")) return handleReportCommand(msg);
       if (text.startsWith("/remover")) return handleRemoveCommand(msg);
+      const telegramUserId = msg.from?.id;
+      if (telegramUserId) {
+        const user = await storage.getUser(telegramUserId);
+        if (user?.awaitingCpf) {
+          const cpf = normalizeCpfDigits(text);
+          if (!cpf || !isValidCpf(cpf)) {
+            await tg.sendMessage(
+              msg.chat.id,
+              "CPF inválido. Envie novamente <b>apenas números</b> (11 dígitos).",
+              { parse_mode: "HTML" }
+            );
+            return;
+          }
+          await storage.upsertUser(telegramUserId, {
+            payerDocument: cpf,
+            cpf,
+            awaitingCpf: false
+          });
+          const forceNew = Boolean(user?.pendingPixForceNew);
+          const offer = getOfferById(user?.pendingVipOfferId) || vipOffers[0] || null;
+          await sendPixFlow({ chatId: msg.chat.id, from: msg.from, forceNew, offer });
+          return;
+        }
+      }
       return;
     }
 
     if (update.callback_query) {
       const cq = update.callback_query;
-      if (cq.data === config.telegram.steps.enterVip) return handlePayCallback(cq, { forceNew: false });
+      if (cq.from?.id) {
+        await storage.upsertUser(cq.from.id, {
+          botBlockedAt: null,
+          botBlockedContext: null,
+          startReminderStage: null,
+          startReminderBaseAt: null,
+          startReminderNextAt: null
+        });
+      }
+      if (cq.data === config.telegram.steps.enterVip) return handlePayCallback(cq, { forceNew: false, offer: vipOffers[0] || null });
+      const callbackOffer = getOfferByCallbackData(cq.data);
+      if (callbackOffer) return handlePayCallback(cq, { forceNew: false, offer: callbackOffer });
       if (cq.data === config.telegram.steps.payPix) return handlePayCallback(cq, { forceNew: false });
-      if (cq.data === config.telegram.steps.payPixNew) return handlePayCallback(cq, { forceNew: true });
+      if (cq.data === config.telegram.steps.payPixNew) return handlePayCallback(cq, { forceNew: true, offer: null });
+      if (cq.data === config.telegram.steps.copyPix) return handleCopyPixCallback(cq);
       if (cq.data === config.telegram.steps.checkPayment) return handleCheckPaymentCallback(cq);
       if (cq.data === config.telegram.steps.preview) return handlePreviewCallback(cq);
       if (cq.data === config.telegram.steps.benefits) return handlePreviewCallback(cq);

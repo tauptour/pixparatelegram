@@ -8,12 +8,31 @@ function assertFetchAvailable() {
   }
 }
 
-async function mpRequest(accessToken, { method, path, body, idempotencyKey }) {
+function normalizeMisticStatus(transactionState) {
+  const s = String(transactionState || "").trim().toUpperCase();
+  if (!s) return null;
+  if (s === "COMPLETO") return "approved";
+  if (s === "PENDENTE") return "pending";
+  if (s === "FALHA") return "rejected";
+  if (s === "CANCELADO" || s === "CANCELADA") return "cancelled";
+  return s.toLowerCase();
+}
+
+function extractBase64FromDataUrl(maybeDataUrl) {
+  if (!maybeDataUrl) return null;
+  const s = String(maybeDataUrl);
+  const idx = s.indexOf("base64,");
+  if (idx === -1) return s.trim() || null;
+  return s.slice(idx + "base64,".length).trim() || null;
+}
+
+async function misticRequest(clientId, clientSecret, { method, path, body, idempotencyKey }) {
   assertFetchAvailable();
 
-  const url = `https://api.mercadopago.com${path}`;
+  const url = `https://api.misticpay.com${path}`;
   const headers = {
-    Authorization: `Bearer ${accessToken}`,
+    ci: String(clientId),
+    cs: String(clientSecret),
     "Content-Type": "application/json"
   };
 
@@ -36,7 +55,7 @@ async function mpRequest(accessToken, { method, path, body, idempotencyKey }) {
   }
 
   if (!res.ok) {
-    const message = json?.message || json?.error || `Mercado Pago HTTP ${res.status}`;
+    const message = json?.message || json?.error || `MisticPay HTTP ${res.status}`;
     const err = new Error(message);
     err.status = res.status;
     err.details = json;
@@ -47,61 +66,67 @@ async function mpRequest(accessToken, { method, path, body, idempotencyKey }) {
 }
 
 async function createPixPayment({
-  accessToken,
+  clientId,
+  clientSecret,
   amount,
   description,
   telegramUserId,
   telegramUsername,
+  payerName,
+  payerDocument,
   webhookUrl
 }) {
   const idempotencyKey = crypto.randomUUID();
 
-  const payerEmail = `tg-${telegramUserId}@example.com`;
   const externalReference = `tg_${telegramUserId}_${Date.now()}`;
 
   const body = {
-    transaction_amount: amount,
-    description,
-    payment_method_id: "pix",
-    payer: {
-      email: payerEmail
-    },
-    external_reference: externalReference,
-    metadata: {
-      telegram_user_id: String(telegramUserId),
-      telegram_username: telegramUsername ? String(telegramUsername) : null
-    }
+    amount,
+    payerName: String(payerName || telegramUsername || telegramUserId || "Cliente").trim(),
+    payerDocument: String(payerDocument || "").replaceAll(/\D/g, ""),
+    transactionId: externalReference,
+    description
   };
 
-  if (webhookUrl) {
-    body.notification_url = webhookUrl;
-  }
+  if (webhookUrl) body.projectWebhook = webhookUrl;
 
-  const payment = await mpRequest(accessToken, {
+  const result = await misticRequest(clientId, clientSecret, {
     method: "POST",
-    path: "/v1/payments",
+    path: "/api/transactions/create",
     body,
     idempotencyKey
   });
 
-  const tx = payment?.point_of_interaction?.transaction_data || {};
+  const data = result?.data || {};
+  const paymentId = data?.transactionId ?? null;
+  const status = normalizeMisticStatus(data?.transactionState);
+
   return {
-    paymentId: String(payment.id),
-    status: payment.status,
+    paymentId: paymentId ? String(paymentId) : null,
+    amount,
+    status,
     createdAt: new Date().toISOString(),
-    qrCode: tx.qr_code || null,
-    qrCodeBase64: tx.qr_code_base64 || null,
-    ticketUrl: tx.ticket_url || null,
-    raw: payment
+    qrCode: data?.copyPaste || null,
+    qrCodeBase64: extractBase64FromDataUrl(data?.qrCodeBase64) || null,
+    ticketUrl: data?.qrcodeUrl || null,
+    raw: result
   };
 }
 
-async function getPaymentById({ accessToken, paymentId }) {
-  return mpRequest(accessToken, {
-    method: "GET",
-    path: `/v1/payments/${encodeURIComponent(paymentId)}`
+async function getPaymentById({ clientId, clientSecret, paymentId }) {
+  const result = await misticRequest(clientId, clientSecret, {
+    method: "POST",
+    path: "/api/transactions/check",
+    body: { transactionId: paymentId }
   });
+  const tx = result?.transaction || null;
+  return {
+    paymentId: paymentId ? String(paymentId) : null,
+    status: normalizeMisticStatus(tx?.transactionState),
+    transactionState: tx?.transactionState || null,
+    value: tx?.value ?? null,
+    raw: result
+  };
 }
 
-module.exports = { createPixPayment, getPaymentById };
-
+module.exports = { createPixPayment, getPaymentById, normalizeMisticStatus };
